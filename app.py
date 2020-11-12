@@ -32,7 +32,7 @@ class HistoryTracker:
 
     def update(self, data, state, ts=None):
         # Skip all missing or zeroed out points
-        if data['Right Wrist'][2] == 0.0:
+        if data is None or data['Right Wrist'][2] == 0.0:
             return
 
         if ts is None:
@@ -102,6 +102,10 @@ class PoseHandler:
         data['Right Eye'] = self._get_point_data(rs_frame, kp, 'Right Eye')
         data['Neck'] = self._get_point_data(rs_frame, kp, 'Neck')
         data['Right Wrist'] = self._get_point_data(rs_frame, kp, 'Right Wrist')
+        if data['Right Wrist'][2] > data['Neck'][2]:
+            print('Ignoring invalid wrist depth...')
+            data['Right Wrist'] = (0, 0, 0.0)
+        self.last_data = data
 
         return data
 
@@ -152,36 +156,40 @@ class PoseHandler:
 class Darts:
     def __init__(self):
         self._state = 'waiting'
-        self._state_ctr = 0
+        self._throwing_ctr = 0
+        self._THROWING_CTR_MAX = 15
         self._history = HistoryTracker()
         self._pose_hdlr = PoseHandler()
         self._image = None
-        self._info = ''
+        self._info = []
         self._to_go = 5
         self._score = 0
 
     def _update_state(self, new_state):
         print('State: {} => {}'.format(self._state, new_state))
         self._state = new_state
-        self._state_ctr = 0
+        self._throwing_ctr = 0
 
     def update(self, rs_frame):
         self._image = rs_frame.image
+        self._info = [
+                'Score: {}'.format(self._score),
+                'Remaining attempts: {}'.format(self._to_go)
+                ]
 
         if self._state == 'waiting':
             data = self._pose_hdlr.get_pose_data(rs_frame)
             self._history.update(data, self._state)
-            self._info = [
-                'Get into throwing position!',
-                'Wrist pos: ({}, {}) {:2.2f}m'.format(
-                    self._history.wrist[0],
-                    self._history.wrist[1],
-                    self._history.wrist[2]),
-                'Eye pos: {}'.format(self._history.eye[1]),
-                'Neck pos: {}'.format(self._history.neck[1]),
-                'Inst velocity: {:2.2f}m/s'.format(self._history.inst_velocity)
-                ]
-            print(self._info)
+            self._info = self._info + [
+                    'Get into throwing position!',
+                    'Wrist pos: ({}, {}) {:2.2f}m'.format(
+                        self._history.wrist[0],
+                        self._history.wrist[1],
+                        self._history.wrist[2]),
+                    'Eye pos: {}'.format(self._history.eye[1]),
+                    'Neck pos: {}'.format(self._history.neck[1]),
+                    'Inst velocity: {:2.2f}m/s'.format(self._history.inst_velocity)
+                    ]
 
             # Transition to ready when wrist is in position between
             # eyes and neck and velocity has stopped
@@ -193,12 +201,11 @@ class Darts:
         if self._state == 'ready':
             data = self._pose_hdlr.get_pose_data(rs_frame)
             self._history.update(data, self._state)
-            self._info = [
+            self._info = self._info + [
                 'Throw!',
-                'Last wrist pos: {:2.2f}m'.format(self._history.wrist[2]),
+                'Wrist depth: {:2.2f}m'.format(self._history.wrist[2]),
                 'Inst velocity: {:2.2f}m/s'.format(self._history.inst_velocity)
                 ]
-            print(self._info)
 
             # Transition to throwing when forward movement begins
             if self._history.inst_velocity > 0.3:
@@ -207,21 +214,27 @@ class Darts:
 
         if self._state == 'throwing':
             self._pose_hdlr.submit_for_batch_processing(rs_frame)
-            self._info = 'Throwing!'
+            self._info = self._info + ['Throwing']
 
             # Transition to flying when forward velocity stops
-            self._state_ctr += 1
-            if self._state_ctr >= 30:
+            self._throwing_ctr += 1
+            if self._throwing_ctr >= self._THROWING_CTR_MAX:
                 self._pose_hdlr.complete_batch()
                 self._update_state('flying')
 
         if self._state == 'flying':
-            self._info = 'The dart is flying!'
+            self._info = self._info + ['The dart is flying!']
             if self._pose_hdlr.check_batch_finished():
-                print('Getting batch results')
                 results = self._pose_hdlr.get_batch_results()
                 for result in results:
                     self._history.update(result['data'], 'throwing', result['ts'])
+                # Process results
+                self._score += 10
+
+                # Update attempts
+                self._to_go -= 1
+                if self._to_go == 0:
+                    self._score = 0
                 self._update_state('waiting')
 
     @property
