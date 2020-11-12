@@ -3,6 +3,7 @@ import pandas as pd
 import threading
 import queue
 import multiprocessing as mp
+import cv2
 import edgeiq
 
 
@@ -60,6 +61,9 @@ class HistoryTracker:
                 'inst_velocity': self.inst_velocity,
                 'state': state}
         self._history = self._history.append(new_row, ignore_index=True)
+
+    def get_data(self, state):
+        return self._history[self._history['state'] == state]
 
     def save(self):
         out_df = self._all_data.append(self._history, ignore_index=True)
@@ -156,28 +160,51 @@ class PoseHandler:
         return results
 
 
+class ScreenHandler:
+    def __init__(self):
+        self._background = cv2.imread('dartboard.jpg')
+        self._darts = []
+
+    def get_image(self):
+        image = self._background.copy()
+        for dart in self._darts:
+            image = cv2.circle(image, dart, 3, (0, 255, 0), -1)
+
+        return image
+
+    def add_dart(self, dart_pos):
+        self._darts.append(dart_pos)
+
+    def clear_darts(self):
+        self._darts = []
+
+
 class Darts:
     def __init__(self):
         self._state = 'waiting'
         self._throwing_ctr = 0
         self._THROWING_CTR_MAX = 15
+        self._complete_ctr = 0
+        self._COMPLETE_CTR_MAX = 150
+        self._TOTAL_ATTEMPTS = 5
         self._history = HistoryTracker()
         self._pose_hdlr = PoseHandler()
+        self._screen_hdlr = ScreenHandler()
         self._image = None
         self._info = []
-        self._to_go = 5
+        self._remaining_attempts = self._TOTAL_ATTEMPTS
         self._score = 0
 
     def _update_state(self, new_state):
         print('State: {} => {}'.format(self._state, new_state))
         self._state = new_state
         self._throwing_ctr = 0
+        self._complete_ctr = 0
 
     def update(self, rs_frame):
-        self._image = rs_frame.image
         self._info = [
                 'Score: {}'.format(self._score),
-                'Remaining attempts: {}'.format(self._to_go)
+                'Remaining attempts: {}'.format(self._remaining_attempts)
                 ]
 
         if self._state == 'waiting':
@@ -232,13 +259,26 @@ class Darts:
                 for result in results:
                     self._history.update(result['data'], 'throwing', result['ts'])
                 # Process results
-                self._score += 10
+                dart_pos = self._determine_dart_position()
+                self._score += self._get_dart_score(dart_pos)
+                self._screen_hdlr.add_dart(dart_pos)
+                self._history.reset()
+                self._update_state('complete')
 
-                # Update attempts
-                self._to_go -= 1
-                if self._to_go == 0:
+        if self._state == 'complete':
+            self._complete_ctr += 1
+            if self._complete_ctr >= self._COMPLETE_CTR_MAX:
+                # Update remaining attempts
+                self._remaining_attempts -= 1
+
+                if self._remaining_attempts == 0:
                     self._score = 0
+                    self._remaining_attempts = self._TOTAL_ATTEMPTS
+                    self._screen_hdlr.clear_darts()
+
                 self._update_state('waiting')
+
+        self._image = self._screen_hdlr.get_image()
 
     @property
     def image(self):
@@ -247,6 +287,23 @@ class Darts:
     @property
     def text(self):
         return self._info
+
+    def _determine_dart_position(self):
+        throw_df = self._history.get_data('throwing')
+        max_velocity = throw_df['inst_velocity'].max()
+        start_xy = (throw_df.iloc[0]['wrist_x'], throw_df.iloc[0]['wrist_x'])
+        end_xy = (throw_df.iloc[-1]['wrist_x'], throw_df.iloc[-1]['wrist_x'])
+        diff = (end_xy[0] - start_xy[0], end_xy[1] - start_xy[1])
+        dart_pos = (int(640/2 + diff[0]), int(480/2 + diff[1]))
+        print(max_velocity)
+        print(start_xy)
+        print(end_xy)
+        print(diff)
+        print(dart_pos)
+        return dart_pos
+
+    def _get_dart_score(self, dart_pos):
+        return 10
 
     def save(self):
         self._history.save()
