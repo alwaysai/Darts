@@ -1,8 +1,5 @@
 import time
 import pandas as pd
-import threading
-import queue
-import multiprocessing as mp
 import cv2
 import edgeiq
 
@@ -89,8 +86,7 @@ class PoseHandler:
                 'Right Wrist': (0, 0, 0.0)
                 }
 
-        self.batch_thread = None
-        self.frame_queue = queue.Queue()
+        self.batch_frames = []
 
     def _get_point_data(self, rs_frame, kp, name):
         if kp[name] != (-1, -1):
@@ -120,23 +116,15 @@ class PoseHandler:
         return data
 
     def submit_for_batch_processing(self, rs_frame):
-        self.frame_queue.put({'rs_frame': rs_frame.get_portable_realsense_frame(), 'ts': time.time()})
-
-    def complete_batch(self):
-        self.frame_queue.put(None)
+        self.batch_frames.append({'rs_frame': rs_frame.get_portable_realsense_frame(), 'ts': time.time()})
 
     def get_batch_results(self):
         results = []
-        while True:
-            in_data = self.frame_queue.get()
-            if in_data is None:
-                print('Batch processing complete')
-                return
-
+        for frame in self.batch_frames:
             print('Processing batch frame')
-
-            out_data = self.get_pose_data(in_data['rs_frame'])
-            results.append({'data': out_data, 'ts': in_data['ts']})
+            out_data = self.get_pose_data(frame['rs_frame'])
+            results.append({'data': out_data, 'ts': frame['ts']})
+        self.batch_frames = []
         return results
 
 
@@ -148,7 +136,7 @@ class ScreenHandler:
     def get_image(self):
         image = self._background.copy()
         for dart in self._darts:
-            image = cv2.circle(image, dart, 3, (0, 255, 0), -1)
+            image = cv2.circle(image, dart, 5, (255, 0, 0), -1)
 
         return image
 
@@ -229,7 +217,6 @@ class Darts:
             # Transition to flying when forward velocity stops
             self._throwing_ctr += 1
             if self._throwing_ctr >= self._THROWING_CTR_MAX:
-                self._pose_hdlr.complete_batch()
                 self._update_state('flying')
 
         if self._state == 'flying':
@@ -269,11 +256,14 @@ class Darts:
 
     def _determine_dart_position(self):
         throw_df = self._history.get_data('throwing')
-        max_velocity = throw_df['inst_velocity'].max()
-        start_xy = (throw_df.iloc[0]['wrist_x'], throw_df.iloc[0]['wrist_x'])
-        end_xy = (throw_df.iloc[-1]['wrist_x'], throw_df.iloc[-1]['wrist_x'])
+        max_velocity = max(throw_df['inst_velocity'].max(), 0)
+        start_xy = (throw_df.iloc[0]['wrist_x'], throw_df.iloc[0]['wrist_y'])
+        end_xy = (throw_df.iloc[-1]['wrist_x'], throw_df.iloc[-1]['wrist_y'])
         diff = (end_xy[0] - start_xy[0], end_xy[1] - start_xy[1])
+        diff = (diff[0] * 10, diff[1] * 10)
+        diff = (diff[0], diff[1] + 5 * (8 - max_velocity))
         dart_pos = (int(640/2 + diff[0]), int(480/2 + diff[1]))
+        dart_pos = (max(min(dart_pos[0], 640), 0), max(min(dart_pos[1], 480), 0))
         print(max_velocity)
         print(start_xy)
         print(end_xy)
