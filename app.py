@@ -2,13 +2,14 @@ import time
 import pandas as pd
 import threading
 import queue
+import multiprocessing as mp
 import edgeiq
 
 
 class HistoryTracker:
     def __init__(self):
         self._columns = [
-                'ts', 'val', 'distance_traveled',
+                'ts', 'wrist_x', 'wrist_y', 'wrist_z', 'eye_y', 'neck_y', 'distance_traveled',
                 'inst_velocity', 'state']
         self._all_data = pd.DataFrame(columns=self._columns)
         self._history = pd.DataFrame(columns=self._columns)
@@ -20,30 +21,38 @@ class HistoryTracker:
         self._history = pd.DataFrame(columns=self._columns)
         self.distance_traveled = 0.0
         self.inst_velocity = 0.0
-        self.val = 0.0
+        self.wrist = (0, 0, 0.0)
+        self.eye = (0, 0, 0.0)
+        self.neck = (0, 0, 0.0)
 
-    def _get_last_val(self):
+    def _get_last_data(self):
         if len(self._history) == 0:
             return None
         return self._history.iloc[-1]
 
-    def update(self, new_val, state, ts=None):
+    def update(self, data, state, ts=None):
         # Skip all missing or zeroed out points
-        if new_val is None or new_val == 0.0:
+        if data['Right Wrist'][2] == 0.0:
             return
 
         if ts is None:
             ts = time.time()
-        self.val = new_val
+        self.wrist = data['Right Wrist']
+        self.eye = data['Right Eye']
+        self.neck = data['Neck']
 
-        last_val = self._get_last_val()
-        if last_val is not None:
-            self.distance_traveled = last_val['val'] - self.val
-            self.inst_velocity = self.distance_traveled / (ts - last_val['ts'])
+        last_data = self._get_last_data()
+        if last_data is not None:
+            self.distance_traveled = last_data['wrist_z'] - self.wrist[2]
+            self.inst_velocity = self.distance_traveled / (ts - last_data['ts'])
 
         new_row = {
                 'ts': ts,
-                'val': self.val,
+                'wrist_x': self.wrist[0],
+                'wrist_y': self.wrist[1],
+                'wrist_z': self.wrist[2],
+                'eye_y': data['Right Eye'][1],
+                'neck_y': data['Neck'][1],
                 'distance_traveled': self.distance_traveled,
                 'inst_velocity': self.inst_velocity,
                 'state': state}
@@ -63,51 +72,76 @@ class PoseHandler:
         print('Engine: {}'.format(self.pose_estimator.engine))
         print('Accelerator: {}\n'.format(self.pose_estimator.accelerator))
 
+        self.last_data = {
+                'Right Eye': (0, 0, 0.0),
+                'Neck': (0, 0, 0.0),
+                'Right Wrist': (0, 0, 0.0)
+                }
+
         self.batch_thread = None
         self.frame_queue = queue.Queue()
         self.result_queue = queue.Queue()
 
-    def get_wrist_distance(self, rs_frame):
+    def _get_point_data(self, rs_frame, kp, name):
+        if kp[name] != (-1, -1):
+            depth = rs_frame.compute_object_distance(kp[name])
+            return (
+                    kp[name][0],
+                    kp[name][1],
+                    depth)
+        else:
+            return self.last_data[name]
+
+    def get_pose_data(self, rs_frame):
         results = self.pose_estimator.estimate(rs_frame.image)
-        if len(results.poses) > 0:
-            if results.poses[0].key_points['Right Wrist'] != (-1, -1):
-                wrist_distance = rs_frame.compute_object_distance(
-                        results.poses[0].key_points['Right Wrist'])
-            else:
-                wrist_distance = None
-        return wrist_distance
+        if len(results.poses) == 0:
+            return None
+        kp = results.poses[0].key_points
+
+        data = {}
+        data['Right Eye'] = self._get_point_data(rs_frame, kp, 'Right Eye')
+        data['Neck'] = self._get_point_data(rs_frame, kp, 'Neck')
+        data['Right Wrist'] = self._get_point_data(rs_frame, kp, 'Right Wrist')
+
+        return data
 
     def _batch_thread_target(self):
-        data = self.frame_queue.get()
-        if data is None:
-            print('Batch processing complete')
-            return
+        while True:
+            in_data = self.frame_queue.get()
+            if in_data is None:
+                print('Batch processing complete')
+                return
 
-        print('Processing batch frame')
+            print('Processing batch frame')
 
-        wrist_distance = self.get_wrist_distance(data['rs_frame'])
-        self.result_queue.put({'wrist_distance': wrist_distance, 'ts': data['ts']})
+            out_data = self.get_pose_data(in_data['rs_frame'])
+            self.result_queue.put({'data': out_data, 'ts': in_data['ts']})
 
     def submit_for_batch_processing(self, rs_frame):
         if self.batch_thread is None:
             print('Starting batch processing')
             self.batch_thread = threading.Thread(target=self._batch_thread_target, daemon=True)
+            # self.batch_thread = mp.Process(target=self._batch_thread_target)
             self.batch_thread.start()
 
-        self.frame_queue.put({'rs_frame': rs_frame, 'ts': time.time()})
+        self.frame_queue.put({'rs_frame': rs_frame.get_portable_realsense_frame(), 'ts': time.time()})
 
     def complete_batch(self):
         self.frame_queue.put(None)
 
-    def wait_for_batch_finish(self):
-        self.batch_thread.join()
-        self.batch_thread = None
+    def check_batch_finished(self):
+        if self.batch_thread.is_alive() is False:
+            self.batch_thread.join()
+            self.batch_thread = None
+            return True
+        else:
+            return False
 
-    def process_batch_results(self):
+    def get_batch_results(self):
         results = []
         while True:
             try:
-                result = self.result_queue.get()
+                result = self.result_queue.get_nowait()
             except queue.Empty:
                 break
 
@@ -117,7 +151,7 @@ class PoseHandler:
 
 class Darts:
     def __init__(self):
-        self._state = 'line-up'
+        self._state = 'waiting'
         self._state_ctr = 0
         self._history = HistoryTracker()
         self._pose_hdlr = PoseHandler()
@@ -134,13 +168,35 @@ class Darts:
     def update(self, rs_frame):
         self._image = rs_frame.image
 
-        if self._state == 'line-up':
-            wrist_distance = self._pose_hdlr.get_wrist_distance(rs_frame)
-            self._history.update(wrist_distance, self._state)
+        if self._state == 'waiting':
+            data = self._pose_hdlr.get_pose_data(rs_frame)
+            self._history.update(data, self._state)
             self._info = [
-                'Line up!',
-                'Last wrist pos: {:2.2f}m'.format(self._history.val),
-                'Inst velocity: {:2.2f}m'.format(self._history.inst_velocity)
+                'Get into throwing position!',
+                'Wrist pos: ({}, {}) {:2.2f}m'.format(
+                    self._history.wrist[0],
+                    self._history.wrist[1],
+                    self._history.wrist[2]),
+                'Eye pos: {}'.format(self._history.eye[1]),
+                'Neck pos: {}'.format(self._history.neck[1]),
+                'Inst velocity: {:2.2f}m/s'.format(self._history.inst_velocity)
+                ]
+            print(self._info)
+
+            # Transition to ready when wrist is in position between
+            # eyes and neck and velocity has stopped
+            if data['Right Wrist'][1] > data['Right Eye'][1] and \
+                    data['Right Wrist'][1] < data['Neck'][1] and \
+                    self._history.inst_velocity < 0.01:
+                self._update_state('ready')
+
+        if self._state == 'ready':
+            data = self._pose_hdlr.get_pose_data(rs_frame)
+            self._history.update(data, self._state)
+            self._info = [
+                'Throw!',
+                'Last wrist pos: {:2.2f}m'.format(self._history.wrist[2]),
+                'Inst velocity: {:2.2f}m/s'.format(self._history.inst_velocity)
                 ]
             print(self._info)
 
@@ -161,12 +217,12 @@ class Darts:
 
         if self._state == 'flying':
             self._info = 'The dart is flying!'
-            self._pose_hdlr.wait_for_batch_finish()
-            results = self._pose_hdlr.process_batch_results()
-            for result in results:
-                self._history.update(result['wrist_distance'], 'throwing', result['ts'])
-            time.sleep(10)
-            self._update_state('line-up')
+            if self._pose_hdlr.check_batch_finished():
+                print('Getting batch results')
+                results = self._pose_hdlr.get_batch_results()
+                for result in results:
+                    self._history.update(result['data'], 'throwing', result['ts'])
+                self._update_state('waiting')
 
     @property
     def image(self):
