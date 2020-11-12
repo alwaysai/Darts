@@ -9,7 +9,8 @@ import edgeiq
 class HistoryTracker:
     def __init__(self):
         self._columns = [
-                'ts', 'wrist_x', 'wrist_y', 'wrist_z', 'eye_y', 'neck_y', 'distance_traveled',
+                'ts', 'wrist_x', 'wrist_y', 'wrist_z', 'eye_y', 'eye_z',
+                'neck_y', 'neck_z', 'distance_traveled',
                 'inst_velocity', 'state']
         self._all_data = pd.DataFrame(columns=self._columns)
         self._history = pd.DataFrame(columns=self._columns)
@@ -52,7 +53,9 @@ class HistoryTracker:
                 'wrist_y': self.wrist[1],
                 'wrist_z': self.wrist[2],
                 'eye_y': data['Right Eye'][1],
+                'eye_z': data['Right Eye'][2],
                 'neck_y': data['Neck'][1],
+                'neck_z': data['Neck'][2],
                 'distance_traveled': self.distance_traveled,
                 'inst_velocity': self.inst_velocity,
                 'state': state}
