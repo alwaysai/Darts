@@ -72,8 +72,12 @@ class HistoryTracker:
 
 class PoseHandler:
     def __init__(self):
-        self.pose_estimator = edgeiq.PoseEstimation('alwaysai/human-pose')
-        self.pose_estimator.load(engine=edgeiq.Engine.DNN)
+        if edgeiq.is_jetson_xavier_nx():
+            self.pose_estimator = edgeiq.PoseEstimation('alwaysai/human_pose_xavier_nx')
+            self.pose_estimator.load(engine=edgeiq.Engine.TENSOR_RT)
+        else:
+            self.pose_estimator = edgeiq.PoseEstimation('alwaysai/human-pose')
+            self.pose_estimator.load(engine=edgeiq.Engine.DNN)
 
         print('Loaded model:\n{}\n'.format(self.pose_estimator.model_id))
         print('Engine: {}'.format(self.pose_estimator.engine))
@@ -87,7 +91,6 @@ class PoseHandler:
 
         self.batch_thread = None
         self.frame_queue = queue.Queue()
-        self.result_queue = queue.Queue()
 
     def _get_point_data(self, rs_frame, kp, name):
         if kp[name] != (-1, -1):
@@ -116,7 +119,14 @@ class PoseHandler:
 
         return data
 
-    def _batch_thread_target(self):
+    def submit_for_batch_processing(self, rs_frame):
+        self.frame_queue.put({'rs_frame': rs_frame.get_portable_realsense_frame(), 'ts': time.time()})
+
+    def complete_batch(self):
+        self.frame_queue.put(None)
+
+    def get_batch_results(self):
+        results = []
         while True:
             in_data = self.frame_queue.get()
             if in_data is None:
@@ -126,37 +136,7 @@ class PoseHandler:
             print('Processing batch frame')
 
             out_data = self.get_pose_data(in_data['rs_frame'])
-            self.result_queue.put({'data': out_data, 'ts': in_data['ts']})
-
-    def submit_for_batch_processing(self, rs_frame):
-        if self.batch_thread is None:
-            print('Starting batch processing')
-            self.batch_thread = threading.Thread(target=self._batch_thread_target, daemon=True)
-            # self.batch_thread = mp.Process(target=self._batch_thread_target)
-            self.batch_thread.start()
-
-        self.frame_queue.put({'rs_frame': rs_frame.get_portable_realsense_frame(), 'ts': time.time()})
-
-    def complete_batch(self):
-        self.frame_queue.put(None)
-
-    def check_batch_finished(self):
-        if self.batch_thread.is_alive() is False:
-            self.batch_thread.join()
-            self.batch_thread = None
-            return True
-        else:
-            return False
-
-    def get_batch_results(self):
-        results = []
-        while True:
-            try:
-                result = self.result_queue.get_nowait()
-            except queue.Empty:
-                break
-
-            results.append(result)
+            results.append({'data': out_data, 'ts': in_data['ts']})
         return results
 
 
@@ -254,16 +234,15 @@ class Darts:
 
         if self._state == 'flying':
             self._info = self._info + ['The dart is flying!']
-            if self._pose_hdlr.check_batch_finished():
-                results = self._pose_hdlr.get_batch_results()
-                for result in results:
-                    self._history.update(result['data'], 'throwing', result['ts'])
-                # Process results
-                dart_pos = self._determine_dart_position()
-                self._score += self._get_dart_score(dart_pos)
-                self._screen_hdlr.add_dart(dart_pos)
-                self._history.reset()
-                self._update_state('complete')
+            results = self._pose_hdlr.get_batch_results()
+            for result in results:
+                self._history.update(result['data'], 'throwing', result['ts'])
+            # Process results
+            dart_pos = self._determine_dart_position()
+            self._score += self._get_dart_score(dart_pos)
+            self._screen_hdlr.add_dart(dart_pos)
+            self._history.reset()
+            self._update_state('complete')
 
         if self._state == 'complete':
             self._complete_ctr += 1
