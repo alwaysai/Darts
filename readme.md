@@ -4,7 +4,7 @@ Play darts with alwaysAI and the Intel RealSense depth camera!
 
 ## Note
 
-This app is using an experimental and unreleased update to the edgeIQ RealSense API. You will be able to run this app using the QA image in the Dockerfile, but integrate this API into your own apps with caution.
+This app is using an experimental and unreleased update to the edgeIQ RealSense API. You will be able to run this app using the development image in the Dockerfile, but integrate this API into your own apps with caution.
 
 ## Setup
 This app requires an alwaysAI account. Head to the [Sign up page](https://www.alwaysai.co/dashboard) if you don't have an account yet. Follow the instructions to install the alwaysAI tools on your development machine.
