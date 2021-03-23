@@ -116,7 +116,7 @@ class PoseHandler:
         return data
 
     def submit_for_batch_processing(self, rs_frame):
-        self.batch_frames.append({'rs_frame': rs_frame.get_portable_realsense_frame(), 'ts': time.time()})
+        self.batch_frames.append({'rs_frame': rs_frame.get_serializable_realsense_frame(), 'ts': time.time()})
 
     def get_batch_results(self):
         results = []
