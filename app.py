@@ -2,6 +2,7 @@ import time
 import pandas as pd
 import cv2
 import edgeiq
+from edgeiq import realsense
 
 
 class HistoryTracker:
@@ -285,7 +286,7 @@ def main():
     darts = Darts()
 
     try:
-        with edgeiq.RealSense() as video_stream, \
+        with edgeiq.realsense.RealSense() as video_stream, \
                 edgeiq.Streamer() as streamer:
             # Allow Webcam to warm up
             time.sleep(2.0)
