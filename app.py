@@ -74,7 +74,7 @@ class PoseHandler:
             self.pose_estimator = edgeiq.PoseEstimation('alwaysai/human_pose_xavier_nx')
             self.pose_estimator.load(engine=edgeiq.Engine.TENSOR_RT)
         else:
-            self.pose_estimator = edgeiq.PoseEstimation('alwaysai/human-pose')
+            self.pose_estimator = edgeiq.PoseEstimation('alwaysai/human_pose')
             self.pose_estimator.load(engine=edgeiq.Engine.DNN)
 
         print('Loaded model:\n{}\n'.format(self.pose_estimator.model_id))
