@@ -3,7 +3,7 @@
     "start": "python app.py"
   },
   "models": {
-    "alwaysai/human_pose": 2,
+    "alwaysai/human_pose": 3,
     "alwaysai/human_pose_xavier_nx": 3
   }
 }
